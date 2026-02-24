@@ -311,7 +311,10 @@ class VoxtypeOverlay(Gtk.Application):
             Gio.FileMonitorEvent.RENAMED,
         ):
             # Atomic replace (temp + rename) changes the inode — rewatch
-            self._watch_file()
+            if STATE_FILE.exists():
+                self._watch_file()
+            elif STATE_FILE.parent.exists():
+                self._watch_dir(STATE_FILE.parent)
         self._read_state()
 
     def _on_dir_changed(self, monitor, file, other, event):

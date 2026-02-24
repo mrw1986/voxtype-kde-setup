@@ -1,5 +1,5 @@
 #!/bin/bash
-# Voxtype KDE Setup - Installer
+# Voxtype KDE Indicator - Installer
 # Installs the overlay, indicator, and supporting config for voxtype on KDE Plasma 6 Wayland.
 set -euo pipefail
 
@@ -8,7 +8,7 @@ SCRIPTS_DIR="$HOME/.local/bin"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 SHIMS_DIR="$HOME/.local/lib/voxtype-shims"
 
-echo "=== Voxtype KDE Setup Installer ==="
+echo "=== Voxtype KDE Indicator Installer ==="
 echo ""
 
 # Check required dependencies

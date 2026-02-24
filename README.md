@@ -1,4 +1,4 @@
-# Voxtype KDE Setup
+# Voxtype KDE Indicator
 
 Recording indicator and OSD overlay for [Voxtype](https://github.com/voxtype/voxtype) on **KDE Plasma 6 / Wayland**.
 
@@ -37,8 +37,8 @@ pip install --user PyQt6
 ## Quick Install
 
 ```bash
-git clone https://github.com/mrw1986/voxtype-kde-setup.git
-cd voxtype-kde-setup
+git clone https://github.com/mrw1986/voxtype-kde-indicator.git
+cd voxtype-kde-indicator
 ./install.sh
 ```
 

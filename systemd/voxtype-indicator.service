@@ -1,0 +1,12 @@
+[Unit]
+Description=Voxtype recording indicator (tray + OSD)
+After=voxtype.service graphical-session.target
+Requires=graphical-session.target
+
+[Service]
+ExecStart=/home/mrw1986/.local/bin/voxtype-indicator
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

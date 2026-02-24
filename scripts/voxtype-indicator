@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Voxtype recording indicator for KDE Plasma.
+
+Provides a system tray icon that shows voxtype state:
+gray = idle, red = recording, blue = transcribing.
+"""
+
+import os
+import signal
+import sys
+from pathlib import Path
+
+from PyQt6.QtCore import Qt, QTimer, QFileSystemWatcher
+from PyQt6.QtGui import QIcon, QPainter, QColor, QPixmap, QPen
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMenu,
+    QSystemTrayIcon,
+)
+
+
+STATE_FILE = Path(
+    os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+) / "voxtype" / "state"
+
+COLORS = {
+    "idle": QColor(100, 100, 100),
+    "recording": QColor(220, 40, 40),
+    "transcribing": QColor(60, 140, 220),
+}
+
+LABELS = {
+    "idle": "Idle",
+    "recording": "Recording...",
+    "transcribing": "Transcribing...",
+}
+
+
+def make_tray_icon(state: str, size: int = 64) -> QIcon:
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    color = COLORS.get(state, COLORS["idle"])
+    painter.setBrush(color)
+    painter.setPen(QPen(color.darker(120), 2))
+    margin = 6
+    painter.drawEllipse(margin, margin, size - 2 * margin, size - 2 * margin)
+    if state == "recording":
+        painter.setBrush(QColor(255, 255, 255))
+        painter.setPen(Qt.PenStyle.NoPen)
+        inner = size // 4
+        painter.drawEllipse(
+            size // 2 - inner // 2, size // 2 - inner // 2, inner, inner
+        )
+    elif state == "transcribing":
+        painter.setPen(QPen(QColor(255, 255, 255), 3))
+        cx, cy = size // 2, size // 2
+        r = size // 6
+        for i in range(3):
+            x = cx - r + i * r
+            painter.drawPoint(x, cy)
+    painter.end()
+    return QIcon(pixmap)
+
+
+class VoxtypeIndicator:
+    def __init__(self):
+        self.app = QApplication(sys.argv)
+        self.app.setApplicationName("voxtype-indicator")
+        self.app.setQuitOnLastWindowClosed(False)
+
+        self._state = "idle"
+
+        # System tray
+        self.tray = QSystemTrayIcon(make_tray_icon("idle"), self.app)
+        self.tray.setToolTip("Voxtype")
+        menu = QMenu()
+        menu.addAction("Quit", self.app.quit)
+        self.tray.setContextMenu(menu)
+        self.tray.show()
+
+        # Watch state file
+        self.watcher = QFileSystemWatcher()
+        if STATE_FILE.exists():
+            self.watcher.addPath(str(STATE_FILE))
+        if STATE_FILE.parent.exists():
+            self.watcher.addPath(str(STATE_FILE.parent))
+        self.watcher.fileChanged.connect(self._on_state_changed)
+        self.watcher.directoryChanged.connect(self._on_dir_changed)
+
+        # Poll as fallback
+        self._poll_timer = QTimer()
+        self._poll_timer.timeout.connect(self._poll_state)
+        self._poll_timer.start(500)
+
+        self._read_state()
+
+    def _on_dir_changed(self, path):
+        if STATE_FILE.exists() and str(STATE_FILE) not in self.watcher.files():
+            self.watcher.addPath(str(STATE_FILE))
+        self._read_state()
+
+    def _on_state_changed(self, path):
+        if STATE_FILE.exists() and str(STATE_FILE) not in self.watcher.files():
+            self.watcher.addPath(str(STATE_FILE))
+        self._read_state()
+
+    def _poll_state(self):
+        self._read_state()
+
+    def _read_state(self):
+        try:
+            state = STATE_FILE.read_text().strip()
+        except (FileNotFoundError, PermissionError):
+            state = "idle"
+        if state not in COLORS:
+            state = "idle"
+        if state != self._state:
+            self._state = state
+            self.tray.setIcon(make_tray_icon(state))
+
+    def run(self):
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        sys.exit(self.app.exec())
+
+
+if __name__ == "__main__":
+    VoxtypeIndicator().run()

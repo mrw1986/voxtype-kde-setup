@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""Voxtype OSD overlay using GTK4 + layer-shell.
+
+Shows a centered recording/transcribing indicator that never steals focus.
+Uses zwlr_layer_shell_v1 with KeyboardMode.NONE for compositor-enforced
+no-focus-stealing. Controlled via inotify on the voxtype state file.
+"""
+
+import math
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gtk, Gtk4LayerShell, Gdk, GLib, Gio
+
+STATE_FILE = Path(
+    os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+) / "voxtype" / "state"
+
+PI2 = math.pi * 2
+HALF_PI = math.pi / 2
+THREE_HALF_PI = 3 * math.pi / 2
+
+
+class VoxtypeOverlay(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="com.voxtype.overlay")
+        self._state = "idle"
+        self._window = None
+        self._icon_area = None
+        self._monitor = None
+        self._file_monitor_active = False
+
+        # Animation state
+        self._anim_id = None
+        self._anim_start = 0.0
+        self._anim_t = 0.0
+        self._opacity = 0.0
+        self._target_opacity = 0.0
+        self._fade_hide_pending = False
+
+        # Auto-fade after transcribing
+        self._auto_hide_id = None
+
+        # Fallback poll (only when no file monitor is active)
+        self._poll_id = None
+
+    def do_activate(self):
+        self._window = Gtk.Window(application=self)
+        win = self._window
+
+        # Layer shell setup
+        Gtk4LayerShell.init_for_window(win)
+        Gtk4LayerShell.set_layer(win, Gtk4LayerShell.Layer.OVERLAY)
+        Gtk4LayerShell.set_namespace(win, "voxtype-osd")
+        Gtk4LayerShell.set_keyboard_mode(
+            win, Gtk4LayerShell.KeyboardMode.NONE
+        )
+        Gtk4LayerShell.set_exclusive_zone(win, -1)
+
+        win.add_css_class("transparent-window")
+
+        css = Gtk.CssProvider()
+        css.load_from_string(
+            ".transparent-window { background: transparent; }"
+        )
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+        # Single drawing area for the entire OSD
+        self._icon_area = Gtk.DrawingArea()
+        self._icon_area.set_size_request(200, 56)
+        self._icon_area.set_draw_func(self._draw_osd)
+        self._icon_area.set_halign(Gtk.Align.CENTER)
+        self._icon_area.set_valign(Gtk.Align.CENTER)
+
+        win.set_child(self._icon_area)
+        win.set_visible(False)
+
+        self._setup_file_monitor()
+        self._read_state()
+
+    def _draw_osd(self, area, cr, width, height):
+        if self._opacity <= 0.01:
+            return
+
+        alpha = self._opacity
+        t = self._anim_t
+
+        # Rounded rectangle background
+        r = 14
+        x1, y1 = width, height
+        cr.new_sub_path()
+        cr.arc(x1 - r, r, r, -HALF_PI, 0)
+        cr.arc(x1 - r, y1 - r, r, 0, HALF_PI)
+        cr.arc(r, y1 - r, r, HALF_PI, math.pi)
+        cr.arc(r, r, r, math.pi, THREE_HALF_PI)
+        cr.close_path()
+        cr.set_source_rgba(0.05, 0.05, 0.05, 0.82 * alpha)
+        cr.fill()
+
+        cx_icon = 32
+        cy = height / 2
+
+        if self._state == "recording":
+            self._draw_recording(cr, cx_icon, cy, t, alpha)
+        elif self._state == "transcribing":
+            self._draw_transcribing(cr, cx_icon, cy, t, alpha)
+
+    def _draw_recording(self, cr, cx, cy, t, alpha):
+        pulse = 0.5 + 0.5 * math.sin(t * 4.0)
+        mic_alpha = 0.7 + 0.3 * pulse
+
+        # Mic body (rounded rect)
+        mw, mh, mr = 8, 14, 4
+        mx = cx - mw / 2
+        my = cy - mh / 2 - 2
+        cr.new_sub_path()
+        cr.arc(mx + mw - mr, my + mr, mr, -HALF_PI, 0)
+        cr.arc(mx + mw - mr, my + mh - mr, mr, 0, HALF_PI)
+        cr.arc(mx + mr, my + mh - mr, mr, HALF_PI, math.pi)
+        cr.arc(mx + mr, my + mr, mr, math.pi, THREE_HALF_PI)
+        cr.close_path()
+        cr.set_source_rgba(0.9, 0.15, 0.15, mic_alpha * alpha)
+        cr.fill()
+
+        # Mic cup
+        cup_r = 7
+        cup_cy = cy + 2
+        cr.set_line_width(2.0)
+        cr.set_source_rgba(0.9, 0.15, 0.15, mic_alpha * alpha)
+        cr.arc(cx, cup_cy, cup_r, 0, math.pi)
+        cr.stroke()
+
+        # Mic stand
+        cr.move_to(cx, cup_cy + cup_r)
+        cr.line_to(cx, cup_cy + cup_r + 5)
+        cr.stroke()
+        cr.move_to(cx - 5, cup_cy + cup_r + 5)
+        cr.line_to(cx + 5, cup_cy + cup_r + 5)
+        cr.stroke()
+
+        # Pulsing glow ring
+        glow_r = 16 + 4 * pulse
+        cr.arc(cx, cy, glow_r, 0, PI2)
+        cr.set_source_rgba(0.9, 0.15, 0.15, 0.15 * pulse * alpha)
+        cr.fill()
+
+        # Label
+        cr.set_source_rgba(1, 1, 1, 0.95 * alpha)
+        cr.select_font_face("Sans", 0, 1)
+        cr.set_font_size(16)
+        cr.move_to(56, cy + 6)
+        cr.show_text("Recording...")
+
+    def _draw_transcribing(self, cr, cx, cy, t, alpha):
+        for i in range(3):
+            phase = t * 5.0 + i * 1.2
+            bounce = abs(math.sin(phase)) * 6
+            dx = cx - 10 + i * 10
+            dy = cy - bounce
+            cr.arc(dx, dy, 3.5, 0, PI2)
+            cr.set_source_rgba(0.36, 0.72, 0.94, 0.9 * alpha)
+            cr.fill()
+
+        cr.set_source_rgba(0.36, 0.72, 0.94, 0.95 * alpha)
+        cr.select_font_face("Sans", 0, 1)
+        cr.set_font_size(16)
+        cr.move_to(56, cy + 6)
+        cr.show_text("Transcribing...")
+
+    # -- Animation --
+
+    def _start_animation(self):
+        if self._anim_id is not None:
+            return
+        self._anim_id = GLib.timeout_add(33, self._anim_tick)  # ~30 fps
+
+    def _stop_animation(self):
+        if self._anim_id is not None:
+            GLib.source_remove(self._anim_id)
+            self._anim_id = None
+
+    def _anim_tick(self):
+        self._anim_t = time.monotonic() - self._anim_start
+
+        # Fade towards target
+        if self._opacity < self._target_opacity:
+            self._opacity = min(self._opacity + 0.08, self._target_opacity)
+        elif self._opacity > self._target_opacity:
+            self._opacity = max(self._opacity - 0.06, self._target_opacity)
+
+        self._icon_area.queue_draw()
+
+        # If faded out completely, hide and stop
+        if self._fade_hide_pending and self._opacity <= 0.01:
+            self._opacity = 0.0
+            self._fade_hide_pending = False
+            self._window.set_visible(False)
+            self._stop_animation()
+            return False
+
+        return True
+
+    def _fade_in(self):
+        self._cancel_auto_hide()
+        self._fade_hide_pending = False
+        self._target_opacity = 1.0
+        self._window.set_visible(True)
+        self._start_animation()
+
+    def _fade_out(self):
+        if not self._window.get_visible():
+            return
+        self._target_opacity = 0.0
+        self._fade_hide_pending = True
+        self._start_animation()
+
+    # -- Auto-hide --
+
+    def _cancel_auto_hide(self):
+        if self._auto_hide_id is not None:
+            GLib.source_remove(self._auto_hide_id)
+            self._auto_hide_id = None
+
+    def _schedule_auto_hide(self, delay_ms=1500):
+        self._cancel_auto_hide()
+        self._auto_hide_id = GLib.timeout_add(delay_ms, self._auto_hide_cb)
+
+    def _auto_hide_cb(self):
+        self._auto_hide_id = None
+        if self._state == "idle":
+            self._fade_out()
+        return False
+
+    # -- File monitoring --
+
+    def _setup_file_monitor(self):
+        if STATE_FILE.exists():
+            self._watch_file()
+        elif STATE_FILE.parent.exists():
+            self._watch_dir(STATE_FILE.parent)
+        else:
+            # Neither file nor dir exists yet — poll until it appears
+            self._start_poll()
+
+    def _watch_file(self):
+        self._stop_poll()
+        if self._monitor:
+            self._monitor.cancel()
+        gfile = Gio.File.new_for_path(str(STATE_FILE))
+        self._monitor = gfile.monitor_file(
+            Gio.FileMonitorFlags.NONE, None
+        )
+        self._monitor.connect("changed", self._on_file_changed)
+        self._file_monitor_active = True
+
+    def _watch_dir(self, dirpath):
+        self._stop_poll()
+        if self._monitor:
+            self._monitor.cancel()
+        self._file_monitor_active = False
+        gfile = Gio.File.new_for_path(str(dirpath))
+        self._monitor = gfile.monitor_directory(
+            Gio.FileMonitorFlags.NONE, None
+        )
+        self._monitor.connect("changed", self._on_dir_changed)
+
+    def _on_file_changed(self, monitor, file, other, event):
+        # If the state file was deleted, fall back to directory monitoring
+        if event == Gio.FileMonitorEvent.DELETED:
+            self._file_monitor_active = False
+            if STATE_FILE.parent.exists():
+                self._watch_dir(STATE_FILE.parent)
+            else:
+                if self._monitor:
+                    self._monitor.cancel()
+                    self._monitor = None
+                self._start_poll()
+        self._read_state()
+
+    def _on_dir_changed(self, monitor, file, other, event):
+        if STATE_FILE.exists() and not self._file_monitor_active:
+            self._watch_file()
+        self._read_state()
+
+    def _start_poll(self):
+        if self._poll_id is not None:
+            return
+        self._poll_id = GLib.timeout_add(2000, self._poll_tick)
+
+    def _stop_poll(self):
+        if self._poll_id is not None:
+            GLib.source_remove(self._poll_id)
+            self._poll_id = None
+
+    def _poll_tick(self):
+        # Try to establish a proper file monitor
+        if STATE_FILE.exists():
+            self._watch_file()
+            self._read_state()
+            return False  # Stop polling
+        elif STATE_FILE.parent.exists():
+            self._watch_dir(STATE_FILE.parent)
+            self._read_state()
+            return False
+        return True  # Keep polling
+
+    # -- State --
+
+    def _read_state(self):
+        try:
+            state = STATE_FILE.read_text().strip()
+        except (FileNotFoundError, PermissionError):
+            state = "idle"
+        if state not in ("idle", "recording", "transcribing"):
+            state = "idle"
+        if state == self._state:
+            return
+
+        prev = self._state
+        self._state = state
+
+        if state in ("recording", "transcribing"):
+            self._anim_start = time.monotonic()
+            self._fade_in()
+        elif state == "idle" and prev in ("recording", "transcribing"):
+            self._schedule_auto_hide(800)
+
+    def do_shutdown(self):
+        self._stop_animation()
+        self._stop_poll()
+        self._cancel_auto_hide()
+        if self._monitor:
+            self._monitor.cancel()
+        Gtk.Application.do_shutdown(self)
+
+
+def main():
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    app = VoxtypeOverlay()
+    app.run(None)
+
+
+if __name__ == "__main__":
+    main()

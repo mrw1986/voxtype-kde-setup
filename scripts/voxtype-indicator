@@ -99,16 +99,20 @@ class VoxtypeIndicator:
         self._read_state()
 
     def _setup_watcher(self):
-        paths_added = False
+        registered = False
         if STATE_FILE.exists():
             if str(STATE_FILE) not in self.watcher.files():
-                self.watcher.addPath(str(STATE_FILE))
-            paths_added = True
+                if self.watcher.addPath(str(STATE_FILE)):
+                    registered = True
+            else:
+                registered = True
         if STATE_FILE.parent.exists():
             if str(STATE_FILE.parent) not in self.watcher.directories():
-                self.watcher.addPath(str(STATE_FILE.parent))
-            paths_added = True
-        if paths_added and not self._watcher_ready:
+                if self.watcher.addPath(str(STATE_FILE.parent)):
+                    registered = True
+            else:
+                registered = True
+        if registered and not self._watcher_ready:
             self._watcher_ready = True
             self._poll_timer.setInterval(2000)
 

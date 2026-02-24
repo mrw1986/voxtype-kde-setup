@@ -47,15 +47,23 @@ install -m 644 systemd/voxtype-overlay.service "$SYSTEMD_DIR/"
 install -m 644 systemd/voxtype-indicator.service "$SYSTEMD_DIR/"
 install -m 644 systemd/voxtype-no-notify.conf "$SYSTEMD_DIR/voxtype.service.d/no-notify.conf"
 
-# Install KDE notification suppression
-echo "Installing KDE notification config..."
+# Suppress "Remote desktop session started" notification
+# Merges only the needed section instead of replacing the entire file
+echo "Configuring KDE notification suppression..."
 mkdir -p "$HOME/.config"
 NOTIFYRC="$HOME/.config/xdg-desktop-portal-kde.notifyrc"
-if [ -f "$NOTIFYRC" ]; then
-    echo "  Note: backing up existing $NOTIFYRC to ${NOTIFYRC}.bak"
-    cp "$NOTIFYRC" "${NOTIFYRC}.bak"
+if command -v kwriteconfig6 >/dev/null 2>&1; then
+    kwriteconfig6 --file "$NOTIFYRC" --group "Event/remotedesktopstarted" --key "Action" ""
+    kwriteconfig6 --file "$NOTIFYRC" --group "Event/remotedesktopstarted" --key "Execute" ""
+    kwriteconfig6 --file "$NOTIFYRC" --group "Event/remotedesktopstarted" --key "Logfile" ""
+    kwriteconfig6 --file "$NOTIFYRC" --group "Event/remotedesktopstarted" --key "Sound" ""
+    kwriteconfig6 --file "$NOTIFYRC" --group "Event/remotedesktopstarted" --key "TTS" ""
+else
+    # Fallback: only write if the section doesn't already exist
+    if ! grep -q "\[Event/remotedesktopstarted\]" "$NOTIFYRC" 2>/dev/null; then
+        cat config/xdg-desktop-portal-kde.notifyrc >> "$NOTIFYRC"
+    fi
 fi
-install -m 644 config/xdg-desktop-portal-kde.notifyrc "$NOTIFYRC"
 
 # Reload and enable
 echo "Enabling services..."

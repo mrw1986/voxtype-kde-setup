@@ -57,6 +57,9 @@ class VoxtypeOverlay(Gtk.Application):
         self._target_opacity = 0.0
         self._fade_hide_pending = False
 
+        # Debounce idle transitions to avoid flicker from partial file writes
+        self._idle_debounce_id = None
+
         # Fast poll (only when no file monitor is active)
         self._poll_id = None
         # Low-frequency backstop poll (catches missed inotify events)
@@ -278,6 +281,7 @@ class VoxtypeOverlay(Gtk.Application):
                 Gio.FileMonitorFlags.NONE, None
             )
             self._monitor.connect("changed", self._on_dir_changed)
+            self._start_backstop()
         except GLib.Error:
             self._monitor = None
             self._start_poll()
@@ -302,11 +306,16 @@ class VoxtypeOverlay(Gtk.Application):
         self._read_state()
 
     def _on_dir_changed(self, monitor, file, other, event):
-        # Only react to events related to the state file
-        if file is not None:
-            changed_name = file.get_basename()
-            if changed_name != STATE_FILE.name:
-                return
+        # Only react to events related to the state file (check both
+        # file and other, since rename events may use either)
+        target = STATE_FILE.name
+        match = False
+        if file is not None and file.get_basename() == target:
+            match = True
+        if other is not None and other.get_basename() == target:
+            match = True
+        if not match:
+            return
         if STATE_FILE.exists() and not self._file_monitor_active:
             self._watch_file()
         self._read_state()
@@ -349,25 +358,43 @@ class VoxtypeOverlay(Gtk.Application):
 
     # -- State --
 
+    def _cancel_idle_debounce(self):
+        if self._idle_debounce_id is not None:
+            GLib.source_remove(self._idle_debounce_id)
+            self._idle_debounce_id = None
+
     def _read_state(self):
         state = _read_state_file()
         if state == self._state:
             return
 
-        prev = self._state
-        self._state = state
-
         if state in ("recording", "transcribing"):
+            self._cancel_idle_debounce()
+            self._state = state
             self._display_state = state
             self._anim_start = time.monotonic()
             self._fade_in()
-        elif state == "idle" and prev in ("recording", "transcribing"):
+        elif state == "idle" and self._state in ("recording", "transcribing"):
+            # Debounce: confirm idle after 100ms to avoid flicker from
+            # transient partial writes (truncate+write pattern)
+            if self._idle_debounce_id is None:
+                self._idle_debounce_id = GLib.timeout_add(
+                    100, self._confirm_idle
+                )
+
+    def _confirm_idle(self):
+        self._idle_debounce_id = None
+        state = _read_state_file()
+        if state == "idle" and self._state in ("recording", "transcribing"):
+            self._state = "idle"
             # Keep _display_state as prev so content fades out with background
             self._fade_out()
+        return False
 
     def do_shutdown(self):
         self._stop_animation()
         self._stop_poll()
+        self._cancel_idle_debounce()
         if self._monitor:
             self._monitor.cancel()
         Gtk.Application.do_shutdown(self)

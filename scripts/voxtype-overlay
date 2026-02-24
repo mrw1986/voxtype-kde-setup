@@ -26,6 +26,17 @@ STATE_FILE = Path(
 PI2 = math.pi * 2
 HALF_PI = math.pi / 2
 THREE_HALF_PI = 3 * math.pi / 2
+_VALID_STATES = frozenset(("idle", "recording", "transcribing"))
+
+
+def _read_state_file():
+    """Read the voxtype state file safely with bounded read."""
+    try:
+        with open(STATE_FILE, "r", errors="replace") as f:
+            state = f.read(64).strip()
+    except OSError:
+        return "idle"
+    return state if state in _VALID_STATES else "idle"
 
 
 class VoxtypeOverlay(Gtk.Application):
@@ -52,6 +63,10 @@ class VoxtypeOverlay(Gtk.Application):
         self._poll_id = None
 
     def do_activate(self):
+        # Guard against repeated activation
+        if self._window is not None:
+            return
+
         self._window = Gtk.Window(application=self)
         win = self._window
 
@@ -250,33 +265,40 @@ class VoxtypeOverlay(Gtk.Application):
         elif STATE_FILE.parent.exists():
             self._watch_dir(STATE_FILE.parent)
         else:
-            # Neither file nor dir exists yet — poll until it appears
             self._start_poll()
 
     def _watch_file(self):
         self._stop_poll()
         if self._monitor:
             self._monitor.cancel()
-        gfile = Gio.File.new_for_path(str(STATE_FILE))
-        self._monitor = gfile.monitor_file(
-            Gio.FileMonitorFlags.NONE, None
-        )
-        self._monitor.connect("changed", self._on_file_changed)
-        self._file_monitor_active = True
+        try:
+            gfile = Gio.File.new_for_path(str(STATE_FILE))
+            self._monitor = gfile.monitor_file(
+                Gio.FileMonitorFlags.NONE, None
+            )
+            self._monitor.connect("changed", self._on_file_changed)
+            self._file_monitor_active = True
+        except GLib.Error:
+            self._monitor = None
+            self._file_monitor_active = False
+            self._start_poll()
 
     def _watch_dir(self, dirpath):
         self._stop_poll()
         if self._monitor:
             self._monitor.cancel()
         self._file_monitor_active = False
-        gfile = Gio.File.new_for_path(str(dirpath))
-        self._monitor = gfile.monitor_directory(
-            Gio.FileMonitorFlags.NONE, None
-        )
-        self._monitor.connect("changed", self._on_dir_changed)
+        try:
+            gfile = Gio.File.new_for_path(str(dirpath))
+            self._monitor = gfile.monitor_directory(
+                Gio.FileMonitorFlags.NONE, None
+            )
+            self._monitor.connect("changed", self._on_dir_changed)
+        except GLib.Error:
+            self._monitor = None
+            self._start_poll()
 
     def _on_file_changed(self, monitor, file, other, event):
-        # If the state file was deleted, fall back to directory monitoring
         if event == Gio.FileMonitorEvent.DELETED:
             self._file_monitor_active = False
             if STATE_FILE.parent.exists():
@@ -289,6 +311,11 @@ class VoxtypeOverlay(Gtk.Application):
         self._read_state()
 
     def _on_dir_changed(self, monitor, file, other, event):
+        # Only react to events related to the state file
+        if file is not None:
+            changed_name = file.get_basename()
+            if changed_name != STATE_FILE.name:
+                return
         if STATE_FILE.exists() and not self._file_monitor_active:
             self._watch_file()
         self._read_state()
@@ -304,26 +331,20 @@ class VoxtypeOverlay(Gtk.Application):
             self._poll_id = None
 
     def _poll_tick(self):
-        # Try to establish a proper file monitor
         if STATE_FILE.exists():
             self._watch_file()
             self._read_state()
-            return False  # Stop polling
+            return False
         elif STATE_FILE.parent.exists():
             self._watch_dir(STATE_FILE.parent)
             self._read_state()
             return False
-        return True  # Keep polling
+        return True
 
     # -- State --
 
     def _read_state(self):
-        try:
-            state = STATE_FILE.read_text().strip()
-        except (FileNotFoundError, PermissionError):
-            state = "idle"
-        if state not in ("idle", "recording", "transcribing"):
-            state = "idle"
+        state = _read_state_file()
         if state == self._state:
             return
 

@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
     QSystemTrayIcon,
 )
 
-
 STATE_FILE = Path(
     os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 ) / "voxtype" / "state"
@@ -29,11 +28,15 @@ COLORS = {
     "transcribing": QColor(60, 140, 220),
 }
 
-LABELS = {
-    "idle": "Idle",
-    "recording": "Recording...",
-    "transcribing": "Transcribing...",
-}
+
+def _read_state_file():
+    """Read the voxtype state file safely with bounded read."""
+    try:
+        with open(STATE_FILE, "r", errors="replace") as f:
+            state = f.read(64).strip()
+    except OSError:
+        return "idle"
+    return state if state in COLORS else "idle"
 
 
 def make_tray_icon(state: str, size: int = 64) -> QIcon:
@@ -71,6 +74,7 @@ class VoxtypeIndicator:
         self.app.setQuitOnLastWindowClosed(False)
 
         self._state = "idle"
+        self._watcher_ready = False
 
         # System tray
         self.tray = QSystemTrayIcon(make_tray_icon("idle"), self.app)
@@ -82,19 +86,31 @@ class VoxtypeIndicator:
 
         # Watch state file
         self.watcher = QFileSystemWatcher()
-        if STATE_FILE.exists():
-            self.watcher.addPath(str(STATE_FILE))
-        if STATE_FILE.parent.exists():
-            self.watcher.addPath(str(STATE_FILE.parent))
+        self._setup_watcher()
         self.watcher.fileChanged.connect(self._on_state_changed)
         self.watcher.directoryChanged.connect(self._on_dir_changed)
 
-        # Poll as fallback
+        # Fallback poll — only active until watchers are established, then
+        # reduced to 2s as a backstop for edge cases (file deletion/recreation)
         self._poll_timer = QTimer()
         self._poll_timer.timeout.connect(self._poll_state)
-        self._poll_timer.start(500)
+        self._poll_timer.start(500 if not self._watcher_ready else 2000)
 
         self._read_state()
+
+    def _setup_watcher(self):
+        paths_added = False
+        if STATE_FILE.exists():
+            if str(STATE_FILE) not in self.watcher.files():
+                self.watcher.addPath(str(STATE_FILE))
+            paths_added = True
+        if STATE_FILE.parent.exists():
+            if str(STATE_FILE.parent) not in self.watcher.directories():
+                self.watcher.addPath(str(STATE_FILE.parent))
+            paths_added = True
+        if paths_added and not self._watcher_ready:
+            self._watcher_ready = True
+            self._poll_timer.setInterval(2000)
 
     def _on_dir_changed(self, path):
         if STATE_FILE.exists() and str(STATE_FILE) not in self.watcher.files():
@@ -107,15 +123,12 @@ class VoxtypeIndicator:
         self._read_state()
 
     def _poll_state(self):
+        if not self._watcher_ready:
+            self._setup_watcher()
         self._read_state()
 
     def _read_state(self):
-        try:
-            state = STATE_FILE.read_text().strip()
-        except (FileNotFoundError, PermissionError):
-            state = "idle"
-        if state not in COLORS:
-            state = "idle"
+        state = _read_state_file()
         if state != self._state:
             self._state = state
             self.tray.setIcon(make_tray_icon(state))

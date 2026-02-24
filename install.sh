@@ -47,11 +47,6 @@ install -m 644 systemd/voxtype-overlay.service "$SYSTEMD_DIR/"
 install -m 644 systemd/voxtype-indicator.service "$SYSTEMD_DIR/"
 install -m 644 systemd/voxtype-no-notify.conf "$SYSTEMD_DIR/voxtype.service.d/no-notify.conf"
 
-# Fix paths in service files
-sed -i "s|/home/mrw1986|$HOME|g" "$SYSTEMD_DIR/voxtype-overlay.service"
-sed -i "s|/home/mrw1986|$HOME|g" "$SYSTEMD_DIR/voxtype-indicator.service"
-sed -i "s|/home/mrw1986|$HOME|g" "$SYSTEMD_DIR/voxtype.service.d/no-notify.conf"
-
 # Install KDE notification suppression
 echo "Installing KDE notification config..."
 install -m 644 config/xdg-desktop-portal-kde.notifyrc "$HOME/.config/"

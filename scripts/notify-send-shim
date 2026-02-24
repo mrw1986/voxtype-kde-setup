@@ -1,9 +1,15 @@
 #!/bin/bash
 # Wrapper that silently drops notify-send calls from Voxtype.
 # All other callers pass through to the real notify-send.
+# Only matches --app-name=Voxtype (exact flag), not arbitrary args.
+prev=""
 for arg in "$@"; do
-    if [[ "$arg" == "--app-name=Voxtype" || "$arg" == "Voxtype" ]]; then
+    if [[ "$arg" == "--app-name=Voxtype" ]]; then
         exit 0
     fi
+    if [[ "$prev" == "--app-name" && "$arg" == "Voxtype" ]]; then
+        exit 0
+    fi
+    prev="$arg"
 done
 exec /usr/bin/notify-send "$@"

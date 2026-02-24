@@ -73,8 +73,9 @@ class VoxtypeOverlay(Gtk.Application):
         self._window = Gtk.Window(application=self)
         win = self._window
 
-        # Layer shell setup — anchor all edges to span the full monitor,
-        # then center the drawing area inside the full-screen surface
+        # Layer shell setup — no anchors so the compositor centers the window.
+        # Window size matches the OSD pill (not full-screen), which avoids
+        # interfering with screenshot tools and other overlay interactions.
         Gtk4LayerShell.init_for_window(win)
         Gtk4LayerShell.set_layer(win, Gtk4LayerShell.Layer.OVERLAY)
         Gtk4LayerShell.set_namespace(win, "voxtype-osd")
@@ -82,13 +83,6 @@ class VoxtypeOverlay(Gtk.Application):
             win, Gtk4LayerShell.KeyboardMode.NONE
         )
         Gtk4LayerShell.set_exclusive_zone(win, -1)
-        for edge in (
-            Gtk4LayerShell.Edge.TOP,
-            Gtk4LayerShell.Edge.BOTTOM,
-            Gtk4LayerShell.Edge.LEFT,
-            Gtk4LayerShell.Edge.RIGHT,
-        ):
-            Gtk4LayerShell.set_anchor(win, edge, True)
 
         win.add_css_class("transparent-window")
 
@@ -106,8 +100,6 @@ class VoxtypeOverlay(Gtk.Application):
         self._icon_area = Gtk.DrawingArea()
         self._icon_area.set_size_request(200, 56)
         self._icon_area.set_draw_func(self._draw_osd)
-        self._icon_area.set_halign(Gtk.Align.CENTER)
-        self._icon_area.set_valign(Gtk.Align.CENTER)
 
         win.set_child(self._icon_area)
         win.set_visible(False)

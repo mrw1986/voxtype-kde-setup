@@ -75,6 +75,10 @@ class VoxtypeIndicator:
 
         self._state = "idle"
         self._watcher_ready = False
+        self._idle_debounce = QTimer()
+        self._idle_debounce.setSingleShot(True)
+        self._idle_debounce.setInterval(100)
+        self._idle_debounce.timeout.connect(self._confirm_idle)
 
         # System tray
         self.tray = QSystemTrayIcon(make_tray_icon("idle"), self.app)
@@ -127,15 +131,32 @@ class VoxtypeIndicator:
         self._read_state()
 
     def _poll_state(self):
+        # Reset readiness if all watches have been dropped
+        if self._watcher_ready and not self.watcher.files() and not self.watcher.directories():
+            self._watcher_ready = False
+            self._poll_timer.setInterval(500)
         if not self._watcher_ready:
             self._setup_watcher()
         self._read_state()
 
     def _read_state(self):
         state = _read_state_file()
-        if state != self._state:
+        if state == self._state:
+            return
+        if state in ("recording", "transcribing"):
+            self._idle_debounce.stop()
             self._state = state
             self.tray.setIcon(make_tray_icon(state))
+        elif state == "idle" and self._state != "idle":
+            # Debounce idle to avoid flicker from partial file writes
+            if not self._idle_debounce.isActive():
+                self._idle_debounce.start()
+
+    def _confirm_idle(self):
+        state = _read_state_file()
+        if state == "idle" and self._state != "idle":
+            self._state = "idle"
+            self.tray.setIcon(make_tray_icon("idle"))
 
     def run(self):
         signal.signal(signal.SIGINT, signal.SIG_DFL)

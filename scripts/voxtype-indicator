@@ -84,16 +84,16 @@ class VoxtypeIndicator:
         self.tray.setContextMenu(menu)
         self.tray.show()
 
-        # Watch state file
+        # Fallback poll — starts at 500ms, reduced to 2s once watchers are up
+        self._poll_timer = QTimer()
+        self._poll_timer.timeout.connect(self._poll_state)
+
+        # Watch state file (must be after _poll_timer creation)
         self.watcher = QFileSystemWatcher()
         self._setup_watcher()
         self.watcher.fileChanged.connect(self._on_state_changed)
         self.watcher.directoryChanged.connect(self._on_dir_changed)
 
-        # Fallback poll — only active until watchers are established, then
-        # reduced to 2s as a backstop for edge cases (file deletion/recreation)
-        self._poll_timer = QTimer()
-        self._poll_timer.timeout.connect(self._poll_state)
         self._poll_timer.start(500 if not self._watcher_ready else 2000)
 
         self._read_state()

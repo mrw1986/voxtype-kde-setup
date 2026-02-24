@@ -43,6 +43,7 @@ class VoxtypeOverlay(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="com.voxtype.overlay")
         self._state = "idle"
+        self._display_state = "idle"  # visual state used for drawing during fade-out
         self._window = None
         self._icon_area = None
         self._monitor = None
@@ -56,11 +57,10 @@ class VoxtypeOverlay(Gtk.Application):
         self._target_opacity = 0.0
         self._fade_hide_pending = False
 
-        # Auto-fade after transcribing
-        self._auto_hide_id = None
-
-        # Fallback poll (only when no file monitor is active)
+        # Fast poll (only when no file monitor is active)
         self._poll_id = None
+        # Low-frequency backstop poll (catches missed inotify events)
+        self._backstop_id = None
 
     def do_activate(self):
         # Guard against repeated activation
@@ -126,9 +126,9 @@ class VoxtypeOverlay(Gtk.Application):
         cx_icon = 32
         cy = height / 2
 
-        if self._state == "recording":
+        if self._display_state == "recording":
             self._draw_recording(cr, cx_icon, cy, t, alpha)
-        elif self._state == "transcribing":
+        elif self._display_state == "transcribing":
             self._draw_transcribing(cr, cx_icon, cy, t, alpha)
 
     def _draw_recording(self, cr, cx, cy, t, alpha):
@@ -220,6 +220,7 @@ class VoxtypeOverlay(Gtk.Application):
         if self._fade_hide_pending and self._opacity <= 0.01:
             self._opacity = 0.0
             self._fade_hide_pending = False
+            self._display_state = "idle"
             self._window.set_visible(False)
             self._stop_animation()
             return False
@@ -227,7 +228,6 @@ class VoxtypeOverlay(Gtk.Application):
         return True
 
     def _fade_in(self):
-        self._cancel_auto_hide()
         self._fade_hide_pending = False
         self._target_opacity = 1.0
         self._window.set_visible(True)
@@ -239,23 +239,6 @@ class VoxtypeOverlay(Gtk.Application):
         self._target_opacity = 0.0
         self._fade_hide_pending = True
         self._start_animation()
-
-    # -- Auto-hide --
-
-    def _cancel_auto_hide(self):
-        if self._auto_hide_id is not None:
-            GLib.source_remove(self._auto_hide_id)
-            self._auto_hide_id = None
-
-    def _schedule_auto_hide(self, delay_ms=1500):
-        self._cancel_auto_hide()
-        self._auto_hide_id = GLib.timeout_add(delay_ms, self._auto_hide_cb)
-
-    def _auto_hide_cb(self):
-        self._auto_hide_id = None
-        if self._state == "idle":
-            self._fade_out()
-        return False
 
     # -- File monitoring --
 
@@ -278,6 +261,7 @@ class VoxtypeOverlay(Gtk.Application):
             )
             self._monitor.connect("changed", self._on_file_changed)
             self._file_monitor_active = True
+            self._start_backstop()
         except GLib.Error:
             self._monitor = None
             self._file_monitor_active = False
@@ -308,6 +292,13 @@ class VoxtypeOverlay(Gtk.Application):
                     self._monitor.cancel()
                     self._monitor = None
                 self._start_poll()
+        elif event in (
+            Gio.FileMonitorEvent.MOVED_IN,
+            Gio.FileMonitorEvent.MOVED_OUT,
+            Gio.FileMonitorEvent.RENAMED,
+        ):
+            # Atomic replace (temp + rename) changes the inode — rewatch
+            self._watch_file()
         self._read_state()
 
     def _on_dir_changed(self, monitor, file, other, event):
@@ -329,6 +320,7 @@ class VoxtypeOverlay(Gtk.Application):
         if self._poll_id is not None:
             GLib.source_remove(self._poll_id)
             self._poll_id = None
+        self._stop_backstop()
 
     def _poll_tick(self):
         if STATE_FILE.exists():
@@ -339,6 +331,20 @@ class VoxtypeOverlay(Gtk.Application):
             self._watch_dir(STATE_FILE.parent)
             self._read_state()
             return False
+        return True
+
+    def _start_backstop(self):
+        if self._backstop_id is not None:
+            return
+        self._backstop_id = GLib.timeout_add(5000, self._backstop_tick)
+
+    def _stop_backstop(self):
+        if self._backstop_id is not None:
+            GLib.source_remove(self._backstop_id)
+            self._backstop_id = None
+
+    def _backstop_tick(self):
+        self._read_state()
         return True
 
     # -- State --
@@ -352,15 +358,16 @@ class VoxtypeOverlay(Gtk.Application):
         self._state = state
 
         if state in ("recording", "transcribing"):
+            self._display_state = state
             self._anim_start = time.monotonic()
             self._fade_in()
         elif state == "idle" and prev in ("recording", "transcribing"):
-            self._schedule_auto_hide(800)
+            # Keep _display_state as prev so content fades out with background
+            self._fade_out()
 
     def do_shutdown(self):
         self._stop_animation()
         self._stop_poll()
-        self._cancel_auto_hide()
         if self._monitor:
             self._monitor.cancel()
         Gtk.Application.do_shutdown(self)

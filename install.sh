@@ -49,12 +49,25 @@ install -m 644 systemd/voxtype-no-notify.conf "$SYSTEMD_DIR/voxtype.service.d/no
 
 # Install KDE notification suppression
 echo "Installing KDE notification config..."
-install -m 644 config/xdg-desktop-portal-kde.notifyrc "$HOME/.config/"
+mkdir -p "$HOME/.config"
+NOTIFYRC="$HOME/.config/xdg-desktop-portal-kde.notifyrc"
+if [ -f "$NOTIFYRC" ]; then
+    echo "  Note: backing up existing $NOTIFYRC to ${NOTIFYRC}.bak"
+    cp "$NOTIFYRC" "${NOTIFYRC}.bak"
+fi
+install -m 644 config/xdg-desktop-portal-kde.notifyrc "$NOTIFYRC"
 
 # Reload and enable
 echo "Enabling services..."
 systemctl --user daemon-reload
 systemctl --user enable --now voxtype-overlay.service
+
+# Restart voxtype if running so the notify-send shim PATH takes effect
+if systemctl --user is-active --quiet voxtype.service 2>/dev/null; then
+    echo "Restarting voxtype.service to apply notification suppression..."
+    systemctl --user restart voxtype.service
+fi
+
 echo ""
 echo "=== Installation complete ==="
 echo ""

@@ -24,19 +24,33 @@ When you hold the push-to-talk key, a centered overlay appears showing the recor
 - **Voxtype** installed and running (`systemctl --user status voxtype`)
 - **KWin** with `zwlr_layer_shell_v1` support (Plasma 6.x has this)
 
-### Packages
+## Install via COPR (Recommended)
 
 ```bash
-# Overlay dependencies
-sudo dnf install gtk4-layer-shell python3-gobject
-
-# Tray icon (optional)
-pip install --user PyQt6
+sudo dnf copr enable mrw1986/voxtype-kde-indicator
+sudo dnf install voxtype-kde-indicator
 ```
 
-## Quick Install
+Then enable the services:
 
 ```bash
+systemctl --user daemon-reload
+systemctl --user enable --now voxtype-overlay.service
+
+# Optional tray icon (requires python3-PyQt6):
+systemctl --user enable --now voxtype-indicator.service
+```
+
+## Install from Source
+
+```bash
+# Install dependencies
+sudo dnf install gtk4-layer-shell python3-gobject
+
+# Optional tray icon dependency
+pip install --user PyQt6
+
+# Clone and install
 git clone https://github.com/mrw1986/voxtype-kde-indicator.git
 cd voxtype-kde-indicator
 ./install.sh
